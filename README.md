@@ -1,6 +1,6 @@
 # HBIC — Mac Control Skill for Claude Code
 
-A Claude Code skill that gives Claude full control of macOS: mouse, keyboard, screenshots, window management, terminal orchestration, browser JS execution, AppleScript-aware apps (Notes / Calendar / Mail / Messages / Finder), accessibility tree reading, and notifications.
+A Claude Code skill that gives Claude full control of macOS: mouse, keyboard, screenshots, window management, terminal orchestration, browser JS execution, multi-step web form driving, AppleScript-aware apps (Notes / Calendar / Mail / Messages / Finder), accessibility tree reading, Codex desktop app + CLI orchestration, and notifications.
 
 > "HBIC" = Head Bitch In Charge. Yes, really.
 
@@ -37,7 +37,7 @@ The frontmatter `description` field controls when Claude pulls the skill in. The
 - **Apps via AppleScript** — Chrome/Safari JS execution (with the JS-from-Apple-Events toggle gotcha), native scriptable apps (Notes, Calendar, Mail, Messages, Finder), accessibility-tree reading, native notifications
 - **System Primitives** — `open`, clipboard (`pbcopy`/`pbpaste`), process management, volume, window position
 - **HTTP API** — full bridge endpoint reference
-- **Patterns** — high-leverage workflows: cross-LLM orchestration intro, parallel work coordination, dismissing system permission dialogs, OCR-driven coordinate workflows
+- **Patterns** — high-leverage workflows: cross-LLM orchestration intro, parallel work coordination, multi-step web form driving (verify before one-shot Submit, fill-all-tabs rule, dropdown lookup), Codex (OpenAI) desktop app + CLI orchestration, dismissing system permission dialogs, OCR-driven coordinate workflows
 - **Key Details** — kernel paths, permission notes, known limits
 
 ## License
