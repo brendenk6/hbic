@@ -311,6 +311,24 @@ hid capture /tmp/screen.png
 # Then use Read tool on /tmp/screen.png to see it
 ```
 
+### Driving multi-step web forms
+
+For homework platforms, grant portals, multi-tab signups — anything with a "Submit" or "Check" button that's one-shot or rate-limited — three rules survive across sites:
+
+1. **Verify before one-shot actions.** Many platforms cap "Check answer" or "Submit" to a single attempt. Read the form back via JS BEFORE clicking — confirm every field is filled, totals balance, and any "to account for" reconciliation matches. The button doesn't warn about empty fields.
+
+2. **Multi-tab forms: fill EVERY tab before submitting.** A single Submit usually covers all tabs at once. Filling the visible tab and clicking submit wastes your one shot on a partial answer.
+
+3. **Read dropdown options before filling.** Don't guess label text — exact spelling and special characters (em-dashes, fractions) matter. Most spreadsheet/form widgets expose the option list via the contentWindow's data layer (e.g. jSheet stores them at `workBook.dropDownReference[N].list`). Look for it before typing.
+
+Common navigation gotchas:
+
+- **Resume splash.** Re-entering a partially-completed form often goes through a summary page first ("Continue"/"Resume"/"Begin"). Don't assume the assignment link drops you on the question.
+- **Next-button skip.** Some platforms' "Next" advances 2 items if you click during a save. Always verify location after navigation, not just after page load.
+- **Duplicate-tab errors.** Clicking an LMS link while a prior session is still loading can spawn a duplicate tab and trigger "You already have this assignment open." Recovery: close the duplicate, re-enter through the original path.
+
+Driving the form: Chrome/Safari JS-execute (covered above) works for any of these. The DOM access patterns transfer; only the navigation choreography differs per site.
+
 ### Cross-LLM Communication Checklist (DO THIS EVERY TIME)
 
 Before sending ANY task to another LLM, complete these steps in order:
@@ -408,19 +426,51 @@ To inspect dialog contents first:
 osascript -e 'tell application "System Events" to tell process "UserNotificationCenter" to return entire contents of window 1'
 ```
 
-### Navigating Codex desktop app
-The Codex (OpenAI) desktop app is Electron. All clicks require `cliclick`.
-- **Model picker**: click the model pill (e.g. "GPT-5.4 v") at bottom of input area. Opens a dropdown with Intelligence levels + "GPT-X.X >" submenu. Click the model name to expand, then click target version.
-- **Update button**: blue pill in top-left near traffic lights. Only visible when update available.
-- **Send message**: paste text with cmd+v into input field, then cliclick the send button (circle with up arrow) at bottom-right of input bar.
-- **Keyboard shortcuts**: the tooltips show shortcuts but they may conflict with macOS (e.g. the model picker shows Shift+Cmd+M but Cmd+M minimizes). Always use cliclick on the UI element instead.
+### Codex (OpenAI) desktop app + CLI
 
-### Codex CLI
+**Architecture** — App is Electron wrapping the Rust binary at `/Applications/Codex.app/Contents/Resources/codex` (bundle id `com.openai.codex`). Live process spawns `codex app-server --analytics-default-enabled` for backend. App + CLI share `~/.codex/` (config.toml, sessions/, threads/, memories/, skills/, plugins/, AGENTS.md).
+
+**Two codex binaries on this Mac** — match the surface to the install:
+- `/Applications/Codex.app/Contents/Resources/codex` — Rust, current with app (e.g. `26.422.30944`). Use this for IPC into the running app.
+- `~/.npm-global/bin/codex` (on PATH, if installed via `npm install -g @openai/codex`) — `codex-cli` Node wrapper. Older than the bundled binary. Update via `npm install -g @openai/codex@latest`.
+
+**Drive the running app via IPC** — preferred over mouse/keyboard for the desktop app:
 ```bash
-codex --model gpt-5.5                         # start with specific model
-codex --model gpt-5.4                         # fallback if 5.5 unavailable
+/Applications/Codex.app/Contents/Resources/codex app-server proxy
+# stdio ↔ live app-server control socket. Use bundled binary for protocol match.
+
+/Applications/Codex.app/Contents/Resources/codex app-server generate-json-schema
+# inspect the protocol
 ```
-Launch in project directory. Uses `~/.codex/AGENTS.md` for context. Update: `npm install -g @openai/codex@latest`.
+
+**CLI subcommands** (`codex --help` for full list):
+| Command | Use |
+|---------|-----|
+| `codex exec "..."` | Non-interactive one-shot (scriptable) |
+| `codex resume --last` | Pick up most recent session |
+| `codex fork --last` | Fork most recent session |
+| `codex apply` | `git apply` the last diff |
+| `codex review` | Non-interactive code review |
+| `codex cloud` | Browse Codex Cloud tasks, apply locally |
+| `codex mcp-server` | Run Codex itself as an MCP server (stdio) |
+| `codex sandbox` | Run a command inside Codex's sandbox |
+
+**Common flags**: `-c model=gpt-5.5`, `-c model_reasoning_effort=xhigh`, `-m gpt-5.5`, `--full-auto`, `-s {read-only,workspace-write,danger-full-access}`, `--search`, `-i image.png`, `-C dir`, `-a {untrusted,on-request,never}`, `--dangerously-bypass-approvals-and-sandbox`.
+
+**App concepts**:
+- Modes per thread: **Local / Worktree / Cloud**. Cloud is a separate usage bucket from local — under the 10x Pro promo (through May 31, 2026), milk both by firing cloud jobs from the app while iterating locally.
+- Trusted dirs gate auto-approval — see `[projects."/path"]` blocks in `~/.codex/config.toml`.
+- Bundled MCP servers run automatically: `SkyComputerUseClient mcp` (computer use), `browser-use`. Already in process list when app is running.
+- `$imagegen` in a prompt triggers gpt-image-2 (counts ~3-5x toward usage limits).
+- Shortcuts: `Cmd+J` integrated terminal, `Cmd+K` command palette, `Ctrl+M` voice dictation, `Ctrl+L` clear terminal (NOT Cmd+K — that's the palette).
+
+**1M context toggle is GONE in GPT-5.5** — `model_context_window = 1000000` in config.toml is a no-op on 5.5 (GitHub issue `openai/codex#19208` closed as not-planned). Stay on `gpt-5.4` if you need the 1M window.
+
+**Screen-control fallback** (when IPC can't reach a UI element) — Codex is Electron, IOHIDPostEvent clicks DO NOT register. Use `cliclick`:
+- Model picker: model pill at bottom of input (e.g. "GPT-5.5 v") opens dropdown with Intelligence levels + "GPT-X.X >" submenu. Click model name to expand, then click target version.
+- Update button: blue pill in top-left near traffic lights, only visible when update available.
+- Send: paste with `cmd+v` then `cliclick c:<x>,<y>` on the send button (circle with up arrow) bottom-right of input bar.
+- Tooltip shortcuts can conflict with macOS (e.g. picker shows `Shift+Cmd+M` but `Cmd+M` minimizes) — always cliclick the element.
 
 ### Getting pixel coordinates with Prism vision encoder
 Use `encode_screenshot()` with max settings for OCR + UI element detection:
