@@ -64,14 +64,54 @@ For complex text (em dashes, newlines, multi-line, non-ASCII): `pbcopy` then `cm
 
 ## Terminal (AppleScript — runs direct, not through HTTP service)
 
+**Discovery / focus / control commands** — these are safe to use freely:
+
 ```bash
 hid term                       # list all terminal windows + tabs + TTYs + processes
 hid term claude                # find claude code sessions (window ID + TTY + name)
 hid term new                   # open new terminal window
 hid term focus <window_id>     # bring window to front
-hid term type <wid> <text>     # type into window (for interactive REPLs like Claude Code)
-hid term compact <window_id>   # focus + type /compact + enter
+hid term compact <window_id>   # focus + type /compact + enter (purpose-built trigger)
 ```
+
+**Do NOT use `hid term type` for messaging.** It exists in the `hid` CLI but it's unreliable for any real prompt — `hid key cmd+v` can degrade into a literal `v`, and `hid term type` can fail to submit the line. **For ALL terminal messaging — short, long, ASCII, Unicode, single-line, multi-line — use the AppleScript clipboard pattern below.** No exceptions for "tiny ASCII pokes," no fallbacks to `hid term type`. AppleScript is the default and only path.
+
+### Terminal messaging — the ONE pattern (always use this)
+
+**Run a command in a new Terminal window:**
+```bash
+osascript <<'APPLESCRIPT'
+tell application id "com.apple.Terminal"
+  activate
+  do script "cd /path/to/project && your-command-here"
+end tell
+APPLESCRIPT
+```
+
+**Send any prompt (short or long) to an existing Terminal window:**
+```bash
+pbcopy <<'PROMPT'
+your prompt here — any length, any characters
+PROMPT
+
+osascript <<'APPLESCRIPT'
+tell application id "com.apple.Terminal"
+  activate
+  set index of window id <wid> to 1
+end tell
+delay 0.2
+tell application "System Events"
+  tell process "Terminal"
+    keystroke "v" using command down
+    key code 36
+  end tell
+end tell
+APPLESCRIPT
+```
+
+This works for every messaging case: orchestrating other LLMs (Codex, Kimi, Gemini, Claude), sending one-line pings, multi-paragraph briefs, prompts with em-dashes / Unicode / newlines / quoted code blocks. There is no situation where `hid term type` is preferable.
+
+The only legitimate `hid term *` typing command is `hid term compact <wid>` — it's a purpose-built `/compact` trigger that handles the focus + keystroke + return sequence and is shaped for Claude Code's idle-window timing. Don't reach for `hid term type` to roll your own version of that or anything else.
 
 ## Apps via AppleScript
 
@@ -301,9 +341,15 @@ POST /terminal/compact    {"window_id": 1234}
 **Timing is critical**: `/compact` only works when Claude Code is idle at the input prompt. If it lands mid-response, it gets swallowed. Always send it as the LAST action before your response ends.
 
 ### Open a new terminal and run something
-1. `hid term new` to open a fresh window
-2. `hid term` to see the new window's ID
-3. `hid term type <wid> "your command here"`
+Always use AppleScript `do script` so Terminal itself inserts the command. There is no fallback — `hid term new` + `hid term type` is unreliable for any real command and should not be used.
+```bash
+osascript <<'APPLESCRIPT'
+tell application id "com.apple.Terminal"
+  activate
+  do script "cd /path/to/project && your command here"
+end tell
+APPLESCRIPT
+```
 
 ### Take a screenshot and read it
 ```bash
@@ -327,32 +373,39 @@ Common navigation gotchas:
 - **Next-button skip.** Some platforms' "Next" advances 2 items if you click during a save. Always verify location after navigation, not just after page load.
 - **Duplicate-tab errors.** Clicking an LMS link while a prior session is still loading can spawn a duplicate tab and trigger "You already have this assignment open." Recovery: close the duplicate, re-enter through the original path.
 
-Driving the form: Chrome/Safari JS-execute (covered above) works for any of these. The DOM access patterns transfer; only the navigation choreography differs per site.
+Driving the form: same DOM patterns over different transports. Chrome/Safari JS-execute (above) works on any user's machine. On Brenden's Mac, prefer Specter (localhost:7777) — site-specific patterns live in the `specter-web-interaction` skill.
 
 ### Cross-LLM Communication Checklist (DO THIS EVERY TIME)
 
 Before sending ANY task to another LLM, complete these steps in order:
 1. **Identify yourself** — name, model, your terminal window ID
 2. **Establish chain of command** — the user is the boss, you are coordinating
-3. **Tell them to load HBIC** — `cat ~/.claude/skills/hbic/SKILL.md`
-4. **Give them your window ID** — so they can message back via `hid term type <your_wid>`
+3. **Tell them to load HBIC** — `cat ~/.claude/skills/hbic/SKILL.md` (so they know to reply via the AppleScript clipboard pattern, not `hid term type`)
+4. **Give them your window ID** — they will reply via the AppleScript clipboard pattern aimed at your window
 5. **THEN send the task** — not before steps 1-4
 
 Skipping the intro means the other LLM doesn't know who's talking, who has authority, or how to respond. Do not skip this.
 
 ### Chat with another LLM in a terminal
-1. `hid term new` to open a new terminal window
-2. `hid term type <wid> "kimi"` (or `gemini`, `codex`, etc.) to start the LLM
-3. Wait a few seconds for it to boot
-4. **Find your own terminal window ID first:** `hid term claude` to get your window ID
-5. **Introduce yourself first.** Tell them who you are, your window ID, and the chain of command:
-   `hid term type <wid> "I'm Claude (Opus 4.6), orchestrating from terminal window <YOUR_WID> on the user's Mac. The user has final authority. I'm going to give you a task to work on. When you're done or need help, you can message me via: hid term type <YOUR_WID> 'your message'. You can also load the skill at ~/.claude/skills/hbic/SKILL.md to see all available commands."`
-6. Then send the actual task
-7. Read replies via AppleScript:
+1. Start the other LLM with Terminal AppleScript:
+   ```bash
+   osascript <<'APPLESCRIPT'
+   tell application id "com.apple.Terminal"
+     activate
+     do script "kimi" -- or gemini/codex/claude
+   end tell
+   APPLESCRIPT
+   ```
+2. Wait a few seconds for it to boot, then run `hid term` to get its window ID.
+3. **Find your own terminal window ID first:** `hid term claude` to get your window ID.
+4. **Introduce yourself first.** Tell them who you are, your window ID, and the chain of command. Use the AppleScript clipboard pattern from "Terminal messaging — the ONE pattern" to paste and submit the intro:
+   `I'm Claude (Opus 4.6), orchestrating from terminal window <YOUR_WID> on the user's Mac. The user has final authority. I'm going to give you a task to work on. When you're done or need help, message me back using the AppleScript clipboard pattern from ~/.claude/skills/hbic/SKILL.md aimed at window <YOUR_WID> — pbcopy your message then osascript keystroke cmd-v + return. Do NOT use 'hid term type' — it's unreliable. The HBIC skill at ~/.claude/skills/hbic/SKILL.md has the full pattern and all available commands.`
+5. Then send the actual task with the same AppleScript clipboard pattern.
+6. Read replies via AppleScript:
 ```bash
 osascript -e 'tell application "Terminal" to return history of tab 1 of window id <wid>' | tail -30
 ```
-7. After sending a message, wait before reading — give the LLM time to respond
+7. After sending a message, wait before reading — give the LLM time to respond.
 
 ### Monitoring another LLM's work
 **Check frequently at first** (every 10-20 seconds) to make sure the LLM:
@@ -368,17 +421,30 @@ osascript -e 'tell application "Terminal" to return history of tab 1 of window i
 - If they're burning context on polish, tell them to ship what they have
 - Use the System Events ctrl-s pattern to inject messages immediately when urgent
 
-**Tell them to load HBIC:** Ask the other LLM to read `~/.claude/skills/hbic/SKILL.md` so they know how to use `hid term type` to message you back, or how to find your terminal window via `hid term claude`.
+**Tell them to load HBIC:** Ask the other LLM to read `~/.claude/skills/hbic/SKILL.md` so they know to message you back via the AppleScript clipboard pattern (NOT `hid term type`), and how to find your terminal window via `hid term claude`.
 
 ### Chat with another Claude in a terminal
 When the other LLM is also a Claude Code instance:
 
-1. **Submit after typing** — `hid term type` does NOT auto-submit. `hid key <wid> return` is unreliable. The reliable pattern is:
+1. **Submit via AppleScript, not HID** — `hid term type` does NOT auto-submit, `hid key <wid> return` is unreliable, and `hid key cmd+v` can type a literal `v`. The reliable pattern is:
    ```bash
-   hid term type <wid> "your message"
-   hid term focus <wid>
-   osascript -e 'tell application "System Events" to keystroke return'
-   hid term focus <your_wid>   # refocus back to your own window
+   pbcopy <<'PROMPT'
+   your message
+   PROMPT
+
+   osascript <<'APPLESCRIPT'
+   tell application id "com.apple.Terminal"
+     activate
+     set index of window id <wid> to 1
+   end tell
+   delay 0.2
+   tell application "System Events"
+     tell process "Terminal"
+       keystroke "v" using command down
+       key code 36
+     end tell
+   end tell
+   APPLESCRIPT
    ```
 2. **Force Claude to read your message** — If the other Claude is mid-generation, press `Ctrl+B` to interrupt and force it to process your queued input.
 3. **Cancel/Stop Claude** — Press `Esc` twice to cancel Claude's current generation.
