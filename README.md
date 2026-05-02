@@ -32,13 +32,18 @@ The frontmatter `description` field controls when Claude pulls the skill in. The
 ## What's in `SKILL.md`
 
 - **Mouse / Keyboard / Vision** — primitives via `hid`
-- **Click Method Decision Tree** — when to use `hid click` vs `cliclick` vs accessibility API
-- **Terminal** — orchestrating other Claude Code sessions, self-compact, cross-LLM CLIs
-- **Apps via AppleScript** — Chrome/Safari JS execution (with the JS-from-Apple-Events toggle gotcha), native scriptable apps (Notes, Calendar, Mail, Messages, Finder), accessibility-tree reading, native notifications
+- **Click Method** — when to use `hid click` vs `cliclick` vs accessibility API vs in-page JS
+- **Terminal** — discovery, control, running commands, the AppleScript clipboard messaging pattern, delivery verification, reading output
+- **Cross-LLM Orchestration** — starting other LLMs, the mandatory intro template, monitor loops, mid-generation interrupts, parallel-work rules, per-CLI memory file paths
+- **Apps via AppleScript** — Chrome/Safari JS execution (with the JS-from-Apple-Events toggle gotcha), native scriptable apps (Notes, Reminders, Calendar, Messages, Mail, Finder), accessibility-tree reading, native notifications
 - **System Primitives** — `open`, clipboard (`pbcopy`/`pbpaste`), process management, volume, window position
 - **HTTP API** — full bridge endpoint reference
-- **Patterns** — high-leverage workflows: cross-LLM orchestration intro, parallel work coordination, multi-step web form driving (verify before one-shot Submit, fill-all-tabs rule, dropdown lookup), Codex (OpenAI) desktop app + CLI orchestration, dismissing system permission dialogs, OCR-driven coordinate workflows
+- **Patterns** — Click a UI element · Type into an app · Compact another Claude session · Self-compact · Web forms (one-shot / rate-limited) · Dismissing macOS permission dialogs · Codex (OpenAI) desktop app · Pixel coordinates via Prism vision encoder
 - **Key Details** — kernel paths, permission notes, known limits
+
+## Hooks
+
+`hooks/cross-llm-monitor.sh` is a `PostToolUse` hook (Bash matcher). It watches for the AppleScript clipboard-paste-into-Terminal pattern and, when matched, injects a reminder telling Claude to schedule a wakeup to check the other LLM's response instead of ending the turn with a status update. Wire it up in `settings.json` if you want the cross-LLM monitor loop enforced automatically.
 
 ## License
 
