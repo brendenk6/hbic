@@ -1,0 +1,294 @@
+#!/bin/zsh
+# cdb — Claude Desktop Bridge CLI.
+# Thin wrapper around the local service at 127.0.0.1:8421.
+# Pulls the bearer token from ~/.config/claude-desktop-bridge/token.
+
+set -eu
+
+TOKEN_PATH="$HOME/.config/claude-desktop-bridge/token"
+HOST="${CDB_HOST:-127.0.0.1}"
+PORT="${CDB_PORT:-8421}"
+API="http://$HOST:$PORT"
+
+if [[ ! -f "$TOKEN_PATH" ]]; then
+  echo "error: token not found at $TOKEN_PATH. Start the service once to generate it." >&2
+  exit 1
+fi
+TOKEN=$(cat "$TOKEN_PATH")
+AUTH="Authorization: Bearer $TOKEN"
+
+urlencode() {
+  local s="$1"
+  python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$s"
+}
+
+json_body() {
+  python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])))' "$1"
+}
+
+usage() {
+  cat <<EOF
+cdb — Claude Desktop Bridge CLI
+
+usage:
+  cdb status
+  cdb projects [--archived]
+  cdb project <name-or-uuid>
+  cdb project-create <name> [description]
+  cdb docs <project>                    list docs in a project
+  cdb read <project> <doc-name>         print doc contents
+  cdb put <project> <doc-name> <file>   upload (upsert) a local file as doc
+  cdb put <project> <doc-name> -        upsert reading from stdin
+  cdb append <project> <doc-name> <file-or-dash>
+  cdb delete <project> <doc-name>
+  cdb memory                             show claude.ai memory (text + controls)
+  cdb memory text                       show just the memory text
+  cdb memory controls                   list memory controls
+  cdb memory controls add <text>        add a control
+  cdb memory controls rm <index>        remove control by index (0-based)
+  cdb memory controls set <file-or->    replace all controls from JSON file/stdin
+  cdb local list                        list local ~/Projects dirs
+  cdb local memory                      list memory files
+  cdb local read <path>
+  cdb local write <path> <file-or-dash>
+  cdb local append <path> <file-or-dash>
+  cdb token                             print the auth token (for pasting)
+  cdb url <path>                        print full API URL for a path
+EOF
+  exit 1
+}
+
+resolve_project() {
+  # accept a name or uuid; return uuid
+  local arg="$1"
+  if [[ "$arg" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    printf "%s" "$arg"
+    return
+  fi
+  local encoded
+  encoded=$(urlencode "$arg")
+  local resp
+  resp=$(curl -sS -H "$AUTH" "$API/projects/by-name/$encoded")
+  local uuid
+  uuid=$(printf "%s" "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uuid",""))' 2>/dev/null || true)
+  if [[ -z "$uuid" ]]; then
+    echo "cdb: project not found: $arg" >&2
+    echo "response: $resp" >&2
+    exit 1
+  fi
+  printf "%s" "$uuid"
+}
+
+resolve_doc_id() {
+  local pid="$1" name="$2"
+  curl -sS -H "$AUTH" "$API/projects/$pid/docs" \
+    | python3 -c 'import json,sys; docs=json.load(sys.stdin); [print(d["uuid"]) for d in docs if d["file_name"]==sys.argv[1]]' "$name"
+}
+
+read_payload() {
+  # "-" = stdin, otherwise file contents
+  if [[ "$1" == "-" ]]; then
+    cat
+  else
+    cat "$1"
+  fi
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  "" | -h | --help | help) usage ;;
+
+  status)
+    curl -sS -H "$AUTH" "$API/status" | python3 -m json.tool
+    ;;
+
+  projects)
+    q=""
+    [[ "${1:-}" == "--archived" ]] && q="?include_archived=true"
+    curl -sS -H "$AUTH" "$API/projects$q" \
+      | python3 -c '
+import json, sys
+projs = json.load(sys.stdin)
+for p in projs:
+    star = "*" if p["is_starred"] else " "
+    uuid8 = p["uuid"][:8]
+    name = p["name"]
+    print(f"{star} {uuid8}  {name}")
+print()
+print(f"total: {len(projs)}")
+'
+    ;;
+
+  project)
+    [[ $# -lt 1 ]] && usage
+    pid=$(resolve_project "$1")
+    curl -sS -H "$AUTH" "$API/projects/$pid" | python3 -m json.tool
+    ;;
+
+  project-create)
+    [[ $# -lt 1 ]] && usage
+    name="$1"; desc="${2:-}"
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"description":sys.argv[2],"is_private":True}))' "$name" "$desc")
+    curl -sS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+      -d "$payload" "$API/projects" | python3 -m json.tool
+    ;;
+
+  docs)
+    [[ $# -lt 1 ]] && usage
+    pid=$(resolve_project "$1")
+    curl -sS -H "$AUTH" "$API/projects/$pid/docs" \
+      | python3 -c '
+import json, sys
+docs = json.load(sys.stdin)
+for d in docs:
+    uuid8 = d["uuid"][:8]
+    name = d["file_name"]
+    toks = d["estimated_token_count"]
+    print(f"  {uuid8}  {name}  (~{toks} tokens)")
+print()
+print(f"total: {len(docs)}")
+'
+    ;;
+
+  read)
+    [[ $# -lt 2 ]] && usage
+    pid=$(resolve_project "$1")
+    curl -sS -H "$AUTH" "$API/projects/$pid/docs?include_content=true" \
+      | python3 -c 'import json,sys; docs=json.load(sys.stdin); [print(d["content"]) for d in docs if d["file_name"]==sys.argv[1]]' "$2"
+    ;;
+
+  put)
+    [[ $# -lt 3 ]] && usage
+    pid=$(resolve_project "$1")
+    name="$2"
+    content=$(read_payload "$3")
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"file_name":sys.argv[1],"content":sys.argv[2]}))' "$name" "$content")
+    curl -sS -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+      -d "$payload" "$API/projects/$pid/docs" | python3 -m json.tool
+    ;;
+
+  append)
+    [[ $# -lt 3 ]] && usage
+    pid=$(resolve_project "$1")
+    name="$2"
+    text=$(read_payload "$3")
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"file_name":sys.argv[1],"text":sys.argv[2]}))' "$name" "$text")
+    curl -sS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+      -d "$payload" "$API/projects/$pid/docs/append" | python3 -m json.tool
+    ;;
+
+  delete)
+    [[ $# -lt 2 ]] && usage
+    pid=$(resolve_project "$1")
+    doc_id=$(resolve_doc_id "$pid" "$2")
+    if [[ -z "$doc_id" ]]; then
+      echo "cdb: doc not found: $2" >&2; exit 1
+    fi
+    curl -sS -w "HTTP %{http_code}\n" -X DELETE -H "$AUTH" "$API/projects/$pid/docs/$doc_id"
+    ;;
+
+  memory)
+    sub="${1:-}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      "")
+        curl -sS -H "$AUTH" "$API/memory" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("=== Memory ===")
+print(d.get("memory", "(empty)"))
+print()
+print("=== Controls ===")
+for i, c in enumerate(d.get("controls", [])):
+    print(f"  [{i}] {c}")
+print()
+ts = d.get("updated_at", "unknown")
+print(f"Updated: {ts}")
+'
+        ;;
+      text)
+        curl -sS -H "$AUTH" "$API/memory" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin).get("memory",""))'
+        ;;
+      controls)
+        sub2="${1:-}"; [[ $# -gt 0 ]] && shift
+        case "$sub2" in
+          "")
+            curl -sS -H "$AUTH" "$API/memory/controls" | python3 -c '
+import json, sys
+controls = json.load(sys.stdin)
+for i, c in enumerate(controls):
+    print(f"  [{i}] {c}")
+print(f"\ntotal: {len(controls)}")
+'
+            ;;
+          add)
+            [[ $# -lt 1 ]] && { echo "usage: cdb memory controls add <text>" >&2; exit 1; }
+            payload=$(python3 -c 'import json,sys; print(json.dumps({"control":sys.argv[1]}))' "$1")
+            curl -sS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+              -d "$payload" "$API/memory/controls" | python3 -c '
+import json, sys
+controls = json.load(sys.stdin)
+for i, c in enumerate(controls):
+    print(f"  [{i}] {c}")
+print(f"\ntotal: {len(controls)}")
+'
+            ;;
+          rm)
+            [[ $# -lt 1 ]] && { echo "usage: cdb memory controls rm <index>" >&2; exit 1; }
+            curl -sS -X DELETE -H "$AUTH" "$API/memory/controls/$1" | python3 -c '
+import json, sys
+controls = json.load(sys.stdin)
+for i, c in enumerate(controls):
+    print(f"  [{i}] {c}")
+print(f"\ntotal: {len(controls)}")
+'
+            ;;
+          set)
+            [[ $# -lt 1 ]] && { echo "usage: cdb memory controls set <file-or-dash>" >&2; exit 1; }
+            content=$(read_payload "$1")
+            payload=$(python3 -c 'import json,sys; print(json.dumps({"controls":json.loads(sys.argv[1])}))' "$content")
+            curl -sS -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+              -d "$payload" "$API/memory/controls" | python3 -c '
+import json, sys
+controls = json.load(sys.stdin)
+for i, c in enumerate(controls):
+    print(f"  [{i}] {c}")
+print(f"\ntotal: {len(controls)}")
+'
+            ;;
+          *) echo "cdb: unknown memory controls command: $sub2" >&2; usage ;;
+        esac
+        ;;
+      *) echo "cdb: unknown memory command: $sub" >&2; usage ;;
+    esac
+    ;;
+
+  local)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      list)    curl -sS -H "$AUTH" "$API/local/projects" | python3 -m json.tool ;;
+      memory)  curl -sS -H "$AUTH" "$API/local/memory"   | python3 -m json.tool ;;
+      read)
+        [[ $# -lt 1 ]] && usage
+        p=$(urlencode "$1")
+        curl -sS -H "$AUTH" "$API/local/read?path=$p" \
+          | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("content") or d.get("detail",""))'
+        ;;
+      write|append)
+        [[ $# -lt 2 ]] && usage
+        content=$(read_payload "$2")
+        key="content"
+        [[ "$sub" == "append" ]] && key="text"
+        payload=$(python3 -c 'import json,sys; print(json.dumps({"path":sys.argv[1], sys.argv[2]:sys.argv[3]}))' "$1" "$key" "$content")
+        curl -sS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+          -d "$payload" "$API/local/$sub" | python3 -m json.tool
+        ;;
+      *) usage ;;
+    esac
+    ;;
+
+  token) printf "%s\n" "$TOKEN" ;;
+  url) printf "%s%s\n" "$API" "${1:-/}" ;;
+
+  *) echo "cdb: unknown command: $cmd" >&2; usage ;;
+esac

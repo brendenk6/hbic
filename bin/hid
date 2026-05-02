@@ -1,0 +1,373 @@
+#!/bin/zsh
+# hid — InputBridge CLI.
+# Thin wrapper around the local service at 127.0.0.1:8422.
+
+set -eu
+
+TOKEN_PATH="$HOME/.config/claude-desktop-bridge/token"
+HOST="${CDB_HOST:-127.0.0.1}"
+PORT="${CDB_PORT:-8421}"
+API="http://$HOST:$PORT"
+
+if [[ ! -f "$TOKEN_PATH" ]]; then
+  echo "error: token not found at $TOKEN_PATH. Start the service first." >&2
+  exit 1
+fi
+TOKEN=$(cat "$TOKEN_PATH")
+AUTH="Authorization: Bearer $TOKEN"
+
+post() {
+  curl -sS -X POST -H "$AUTH" -H "Content-Type: application/json" -d "$2" "$API$1"
+}
+
+get() {
+  curl -sS -H "$AUTH" "$API$1"
+}
+
+usage() {
+  cat <<EOF
+hid — InputBridge CLI (mouse + keyboard control)
+
+mouse:
+  hid pos                       print mouse x y
+  hid screen                    print screen width height
+  hid move <x> <y>             move mouse
+  hid click <x> <y>            left click
+  hid rclick <x> <y>           right click
+  hid dclick <x> <y>           double click
+  hid drag <x1> <y1> <x2> <y2> drag from to
+  hid scroll <dy> [dx]          scroll (negative = down)
+
+keyboard:
+  hid type <text>               type text
+  hid key <combo>               press key combo (e.g. cmd+c, shift+cmd+4)
+  hid down <combo>              key down (hold)
+  hid up <combo>                key up (release)
+
+vision:
+  hid capture [file]            screenshot to file (default /tmp/cdb_screen.png)
+  hid region <x> <y> <w> <h> [file]  capture region
+  hid windows                   list all on-screen windows
+  hid windows find <app>        find windows by app name
+  hid wcapture <window_id> [file]  capture specific window
+
+terminal:
+  hid term                      list terminal windows + tabs + TTYs
+  hid term claude               find claude code sessions
+  hid term new                  open new terminal window
+  hid term focus <window_id>    bring window to front
+  hid term type <wid> <text>    type into window (interactive REPL)
+  hid term compact <window_id>  compact a claude code session
+
+service:
+  hid health                    check service
+EOF
+  exit 1
+}
+
+fmt_json() {
+  python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d))' 2>/dev/null
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  "" | -h | --help | help) usage ;;
+
+  health) get /health | fmt_json ;;
+
+  pos)
+    get /mouse/position | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+x = d["x"]; y = d["y"]
+print(f"{x:.0f} {y:.0f}")
+'
+    ;;
+
+  screen)
+    get /screen/size | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(d["width"], d["height"])
+'
+    ;;
+
+  move)
+    [[ $# -lt 2 ]] && { echo "usage: hid move <x> <y>" >&2; exit 1; }
+    post /mouse/move "{\"x\":$1,\"y\":$2}" | fmt_json
+    ;;
+
+  click)
+    [[ $# -lt 2 ]] && { echo "usage: hid click <x> <y>" >&2; exit 1; }
+    post /mouse/click "{\"x\":$1,\"y\":$2}" | fmt_json
+    ;;
+
+  rclick)
+    [[ $# -lt 2 ]] && { echo "usage: hid rclick <x> <y>" >&2; exit 1; }
+    post /mouse/rightclick "{\"x\":$1,\"y\":$2}" | fmt_json
+    ;;
+
+  dclick)
+    [[ $# -lt 2 ]] && { echo "usage: hid dclick <x> <y>" >&2; exit 1; }
+    post /mouse/doubleclick "{\"x\":$1,\"y\":$2}" | fmt_json
+    ;;
+
+  drag)
+    [[ $# -lt 4 ]] && { echo "usage: hid drag <x1> <y1> <x2> <y2>" >&2; exit 1; }
+    post /mouse/drag "{\"from_x\":$1,\"from_y\":$2,\"to_x\":$3,\"to_y\":$4}" | fmt_json
+    ;;
+
+  scroll)
+    [[ $# -lt 1 ]] && { echo "usage: hid scroll <dy> [dx]" >&2; exit 1; }
+    dy="$1"; dx="${2:-0}"
+    post /mouse/scroll "{\"dy\":$dy,\"dx\":$dx}" | fmt_json
+    ;;
+
+  type)
+    [[ $# -lt 1 ]] && { echo "usage: hid type <text>" >&2; exit 1; }
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"text":sys.argv[1]}))' "$1")
+    post /keyboard/type "$payload" | fmt_json
+    ;;
+
+  key)
+    [[ $# -lt 1 ]] && { echo "usage: hid key <combo>" >&2; exit 1; }
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"keys":sys.argv[1]}))' "$1")
+    post /keyboard/press "$payload" | fmt_json
+    ;;
+
+  down)
+    [[ $# -lt 1 ]] && { echo "usage: hid down <combo>" >&2; exit 1; }
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"keys":sys.argv[1]}))' "$1")
+    post /keyboard/down "$payload" | fmt_json
+    ;;
+
+  up)
+    [[ $# -lt 1 ]] && { echo "usage: hid up <combo>" >&2; exit 1; }
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"keys":sys.argv[1]}))' "$1")
+    post /keyboard/up "$payload" | fmt_json
+    ;;
+
+  capture)
+    out="${1:-/tmp/cdb_screen.png}"
+    get /screen/capture | python3 -c '
+import json, sys, base64
+d = json.load(sys.stdin)
+data = base64.b64decode(d["base64"])
+path = sys.argv[1]
+with open(path, "wb") as f:
+    f.write(data)
+print(f"{len(data)} bytes -> {path}")
+' "$out"
+    ;;
+
+  region)
+    [[ $# -lt 4 ]] && { echo "usage: hid region <x> <y> <w> <h> [file]" >&2; exit 1; }
+    out="${5:-/tmp/cdb_region.png}"
+    post /screen/capture/region "{\"x\":$1,\"y\":$2,\"width\":$3,\"height\":$4}" | python3 -c '
+import json, sys, base64
+d = json.load(sys.stdin)
+data = base64.b64decode(d["base64"])
+path = sys.argv[1]
+with open(path, "wb") as f:
+    f.write(data)
+print(f"{len(data)} bytes -> {path}")
+' "$out"
+    ;;
+
+  windows)
+    sub2="${1:-}"; [[ $# -gt 0 ]] && shift
+    case "$sub2" in
+      find)
+        [[ $# -lt 1 ]] && { echo "usage: hid windows find <app>" >&2; exit 1; }
+        payload=$(python3 -c 'import json,sys; print(json.dumps({"app":sys.argv[1]}))' "$1")
+        post /windows/search "$payload" | python3 -c '
+import json, sys
+wins = json.load(sys.stdin)
+for w in wins:
+    wid = w["id"]; app = w["app"]; title = w.get("title") or ""
+    x = int(w["x"]); y = int(w["y"]); ww = int(w["width"]); hh = int(w["height"])
+    print(f"  {wid:>6}  {app:<20} {ww}x{hh}+{x}+{y}  {title}")
+print(f"\ntotal: {len(wins)}")
+'
+        ;;
+      "")
+        get /windows | python3 -c '
+import json, sys
+wins = json.load(sys.stdin)
+for w in wins:
+    wid = w["id"]; app = w["app"]; title = w.get("title") or ""
+    x = int(w["x"]); y = int(w["y"]); ww = int(w["width"]); hh = int(w["height"])
+    print(f"  {wid:>6}  {app:<20} {ww}x{hh}+{x}+{y}  {title}")
+print(f"\ntotal: {len(wins)}")
+'
+        ;;
+    esac
+    ;;
+
+  wcapture)
+    [[ $# -lt 1 ]] && { echo "usage: hid wcapture <window_id> [file]" >&2; exit 1; }
+    wid="$1"; out="${2:-/tmp/cdb_window.png}"
+    post /windows/capture "{\"window_id\":$wid}" | python3 -c '
+import json, sys, base64
+d = json.load(sys.stdin)
+data = base64.b64decode(d["base64"])
+path = sys.argv[1]
+with open(path, "wb") as f:
+    f.write(data)
+print(f"{len(data)} bytes -> {path}")
+' "$out"
+    ;;
+
+  term)
+    # term commands use osascript directly (not HTTP) — AppleScript
+    # needs the shell's Automation permission, which launchd doesn't have.
+    sub2="${1:-}"; [[ $# -gt 0 ]] && shift
+    case "$sub2" in
+      "" | list)
+        osascript -e '
+tell application "Terminal"
+    set output to ""
+    repeat with w in windows
+        set wID to id of w
+        set wName to name of w
+        set isFront to frontmost of w
+        repeat with j from 1 to (count of tabs of w)
+            set t to tab j of w
+            set tTTY to tty of t
+            set tSel to selected of t
+            set tProcs to processes of t
+            set procStr to ""
+            repeat with p in tProcs
+                if procStr is not "" then set procStr to procStr & ","
+                set procStr to procStr & (p as text)
+            end repeat
+            set output to output & wID & "|" & wName & "|" & isFront & "|" & j & "|" & tTTY & "|" & tSel & "|" & procStr & linefeed
+        end repeat
+    end repeat
+    return output
+end tell
+' | python3 -c '
+import sys
+wins = {}
+for line in sys.stdin:
+    parts = line.strip().split("|")
+    if len(parts) < 7: continue
+    wid, name, front, idx, tty, sel, procs = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
+    if wid not in wins:
+        wins[wid] = {"name": name, "front": front == "true"}
+        marker = "*" if front == "true" else " "
+        print(f"{marker} {int(wid):>6}  {name}")
+    s = ">" if sel == "true" else " "
+    print(f"    {s} tab {idx}  {tty}  [{procs}]")
+print(f"\ntotal: {len(wins)} windows")
+'
+        ;;
+      claude)
+        osascript -e '
+tell application "Terminal"
+    set output to ""
+    repeat with w in windows
+        set wID to id of w
+        set wName to name of w
+        repeat with j from 1 to (count of tabs of w)
+            set t to tab j of w
+            set tProcs to processes of t
+            set hasClaude to false
+            repeat with p in tProcs
+                if (p as text) contains "claude" then set hasClaude to true
+            end repeat
+            if hasClaude then
+                set tTTY to tty of t
+                set procStr to ""
+                repeat with p in tProcs
+                    if procStr is not "" then set procStr to procStr & ","
+                    set procStr to procStr & (p as text)
+                end repeat
+                set output to output & wID & "|" & j & "|" & tTTY & "|" & wName & "|" & procStr & linefeed
+            end if
+        end repeat
+    end repeat
+    return output
+end tell
+' | python3 -c '
+import sys
+lines = [l.strip() for l in sys.stdin if l.strip()]
+if not lines:
+    print("no claude sessions found")
+else:
+    for line in lines:
+        parts = line.split("|")
+        if len(parts) < 5: continue
+        wid, tab, tty, name, procs = parts[0], parts[1], parts[2], parts[3], parts[4]
+        print(f"  {int(wid):>6}  tab {tab}  {tty}  {name[:60]}")
+    print(f"\ntotal: {len(lines)}")
+'
+        ;;
+      new)
+        osascript -e 'tell application "Terminal" to do script ""'
+        ;;
+      focus)
+        [[ $# -lt 1 ]] && { echo "usage: hid term focus <window_id>" >&2; exit 1; }
+        osascript -e "
+tell application \"Terminal\"
+    repeat with w in windows
+        if id of w is $1 then
+            set frontmost of w to true
+            exit repeat
+        end if
+    end repeat
+    activate
+end tell
+"
+        ;;
+      type)
+        [[ $# -lt 2 ]] && { echo "usage: hid term type <window_id> <text>" >&2; exit 1; }
+        wid="$1"; shift
+        osascript -e "
+tell application \"Terminal\"
+    repeat with w in windows
+        if id of w is $wid then
+            set frontmost of w to true
+            exit repeat
+        end if
+    end repeat
+    activate
+end tell
+delay 0.3
+tell application \"System Events\"
+    keystroke \"$*\"
+    keystroke return
+end tell
+"
+        ;;
+      compact)
+        wid="${1:-}"
+        if [[ -z "$wid" ]]; then
+          echo "usage: hid term compact <window_id>"
+          echo "find sessions with: hid term claude"
+          exit 1
+        fi
+        osascript -e "
+tell application \"Terminal\"
+    repeat with w in windows
+        if id of w is $wid then
+            set frontmost of w to true
+            exit repeat
+        end if
+    end repeat
+    activate
+end tell
+delay 0.3
+tell application \"System Events\"
+    keystroke \"/compact\"
+    keystroke return
+end tell
+"
+        echo "sent /compact to window $wid"
+        ;;
+      *) echo "hid term: unknown subcommand: $sub2" >&2; exit 1 ;;
+    esac
+    ;;
+
+  *) echo "hid: unknown command: $cmd" >&2; usage ;;
+esac

@@ -16,12 +16,30 @@ To actually run the commands documented here, you need:
 
 - macOS (tested on macOS 26 Tahoe)
 - A local input/vision bridge listening on `127.0.0.1:8421` with mouse / keyboard / screen / window endpoints. The skill describes the API surface — implementations vary
-- `~/bin/hid` and `~/bin/cdb` CLIs that talk to the bridge
+- The `hid` and `cdb` CLIs from `bin/` (see Install below) on your `PATH`
 - [`cliclick`](https://github.com/BlueM/cliclick) installed at `/opt/homebrew/bin/cliclick` for Electron / webview interaction
 - macOS Accessibility and Screen Recording permissions granted to the bridge service and Terminal
 - Optional: `kimi`, `gemini`, `codex` CLIs if you want the cross-LLM orchestration patterns
 
 If you don't have a bridge service: the AppleScript / `osascript` / `cliclick` / `pbcopy` / `open` patterns in the skill all work standalone with no bridge — it's only the `hid <verb>` commands that need it.
+
+## CLIs (`bin/`)
+
+Two zsh scripts ship with the skill as reference clients for the bridge API:
+
+- **`bin/hid`** — input / vision / terminal. Wraps the bridge HTTP endpoints for mouse, keyboard, screen and window capture, plus AppleScript-driven Terminal discovery and control.
+- **`bin/cdb`** — claude.ai project / docs / memory wrapper. Talks to the same bridge for managing projects, docs, and the claude.ai memory store.
+
+Both expect a bearer token at `~/.config/claude-desktop-bridge/token` and target `127.0.0.1:8421` by default (override with `CDB_HOST` / `CDB_PORT`).
+
+Install by symlinking onto your `PATH`:
+
+```bash
+ln -s "$PWD/bin/hid" ~/bin/hid
+ln -s "$PWD/bin/cdb" ~/bin/cdb
+```
+
+The bridge service itself is **not** included — these CLIs are thin curl wrappers around its HTTP API. Bring your own implementation (or stub) of the endpoints listed in `SKILL.md → HTTP API`.
 
 ## Using the skill with Claude Code
 
